@@ -17,12 +17,12 @@ fn void test_lru_cache() @test => @pool()
 	assert(@ok(lru.get("D")));
 }
 
-fn void custom_free_string(String s) => s.free(mem);
+fn void on_evict_free_string(String k, String v, void* data) => v.free(mem);
 
 fn void test_lru_cache_custom_free() @test
 {
 	LRUCache{String, String} lru;
-	lru.init(mem, 2, &custom_free_string);
+	lru.init(mem, 2, &on_evict_free_string);
 	lru.set("A", "FOO".copy(mem));
 	lru.set("B", "BAR".copy(mem));
 	assert(lru.get("A")!! == "FOO");

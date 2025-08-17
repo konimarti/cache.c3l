@@ -12,7 +12,7 @@ const Allocator MAP_HEAP_ALLOCATOR = (Allocator)&dummy;
 const uint DEFAULT_INITIAL_CAPACITY = 16;
 
 alias CacheMap @private = HashMap{ Key, Node* };
-alias ValueFreeFn = fn void (Value);
+alias OnEvictCallback = fn void (Key, Value, void*);
 
 struct Node @private
 {
@@ -32,8 +32,8 @@ Node head @private = (Node){};
 Node tail @private = (Node){};
 
 <*
- Implements the LRU cache eviction strategy that drops the least used data if
- capacity is reached. `get` and `set` perform in constant time complexity O(1).
+ Implements a LRU cache eviction strategy that drops the least recently used
+ data if capacity is reached. `get` and `set` run in constant time O(1).
 *>
 struct LRUCache
 {
@@ -42,14 +42,19 @@ struct LRUCache
 	Node*       tail;
 	Allocator   allocator;
 	usz         capacity; // Number of elements
-	ValueFreeFn value_free;
+	OnEvictCallback on_evict_fn;
+	void*       evict_data;
 }
 
 <*
  @param [&inout] allocator : "The allocator to use"
  @require capacity > 0 : "The capacity must be 1 or higher"
 *>
-fn LRUCache* LRUCache.init(&self, Allocator allocator, uint capacity = DEFAULT_INITIAL_CAPACITY, ValueFreeFn value_free = null)
+fn LRUCache* LRUCache.init(&self,
+	Allocator allocator,
+	uint capacity = DEFAULT_INITIAL_CAPACITY,
+	OnEvictCallback on_evict_fn = null,
+	void* evict_data = null)
 {
 	self.map.init(allocator);
 
@@ -60,7 +65,8 @@ fn LRUCache* LRUCache.init(&self, Allocator allocator, uint capacity = DEFAULT_I
 
 	self.allocator = allocator;
 	self.capacity = capacity;
-	self.value_free = value_free;
+	self.on_evict_fn = on_evict_fn;
+	self.evict_data = evict_data;
 	return self;
 }
 
@@ -76,7 +82,7 @@ fn void LRUCache.free(&self, uint capacity = DEFAULT_INITIAL_CAPACITY)
 {
 	if (!self.allocator) return;
 	self.map.@each(; Key key, Node* node){
-		self.release_node(node);
+		self.evict_node(node);
 	};
 	self.map.free();
 	*self = {};
@@ -112,7 +118,7 @@ fn bool LRUCache.set(&self, Key key, Value value) @operator([]=)
 	{
 		self.remove_node(node);
 		self.map.remove(key);
-		self.release_node(node);
+		self.evict_node(node);
 	}
 
 	if (self.map.len() >= self.capacity)
@@ -120,7 +126,7 @@ fn bool LRUCache.set(&self, Key key, Value value) @operator([]=)
 		Node* lru = self.tail.prev;
 		self.remove_node(lru);
 		self.map.remove(lru.key);
-		self.release_node(lru);
+		self.evict_node(lru);
 	}
 
 	Node* new_node = allocator::new(self.allocator, Node);
@@ -155,12 +161,12 @@ fn void LRUCache.remove_node(&self, Node *node) @private
 }
 
 <*
- Frees the value of a node with a custom function.
+ Evict node: Run on_evict_fn if defined and free node.
 *>
-fn void LRUCache.release_node(&self, Node* node) @private
+fn void LRUCache.evict_node(&self, Node* node) @private
 {
-	if (self.value_free) {
-		self.value_free(node.value);
+	if (self.on_evict_fn) {
+		self.on_evict_fn(node.key, node.value, self.evict_data);
 	}
 	allocator::free(self.allocator, node);
 }
