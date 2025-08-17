@@ -1,8 +1,8 @@
-module std::collections::cache_test @test;
+module std::collections::cache_test;
 
 import std::collections::cache;
 
-fn void test_lru_cache() => @pool()
+fn void test_lru_cache() @test => @pool()
 {
 	LRUCache{String, int} lru;
 	lru.tinit(2);
@@ -15,4 +15,22 @@ fn void test_lru_cache() => @pool()
 	assert(@catch(lru.get("A")));
 	assert(@ok(lru.get("C")));
 	assert(@ok(lru.get("D")));
+}
+
+fn void custom_free_string(String s) => s.free(mem);
+
+fn void test_lru_cache_custom_free() @test
+{
+	LRUCache{String, String} lru;
+	lru.init(mem, 2, &custom_free_string);
+	lru.set("A", "FOO".copy(mem));
+	lru.set("B", "BAR".copy(mem));
+	assert(lru.get("A")!! == "FOO");
+	lru.set("C", "FFF".copy(mem));
+	assert(@catch(lru.get("B")));
+	lru.set("D", "BBB".copy(mem));
+	assert(@catch(lru.get("A")));
+	assert(@ok(lru.get("C")));
+	assert(@ok(lru.get("D")));
+	lru.free();
 }
