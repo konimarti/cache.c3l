@@ -2,14 +2,19 @@
 // Use of this source code is governed by the MIT license
 // a copy of which can be found in the LICENSE_STDLIB file.
 <*
+ Implementation of LRU and LFU Caches.
  @require $defined((Key){}.hash()) : `No .hash function found on the key`
 *>
 module std::collections::cache{Key, Value};
 
 import std::collections::map;
 import std::collections::pair;
+import std::io;
 
-const Allocator MAP_HEAP_ALLOCATOR = (Allocator)&dummy;
+const Allocator CACHE_HEAP_ALLOCATOR = (Allocator)&dummy;
+const LRUCache ONHEAP_LRU = { .allocator = CACHE_HEAP_ALLOCATOR };
+const LFUCache ONHEAP_LFU = { .allocator = CACHE_HEAP_ALLOCATOR };
+
 const uint DEFAULT_INITIAL_CAPACITY = 16;
 
 alias CacheMap @private = HashMap{ Key, Node* };
@@ -38,13 +43,13 @@ Node tail @private = (Node){};
  Implements a LRU cache eviction strategy that drops the least recently used
  data if capacity is reached. `get` and `set` run in constant time O(1).
 *>
-struct LRUCache
+struct LRUCache (Printable)
 {
 	CacheMap    map;
 	Node*       head;
 	Node*       tail;
 	Allocator   allocator;
-	usz         capacity; // Number of elements
+	usz         capacity;
 	OnEvictCallback on_evict_fn;
 	void*       evict_data;
 }
@@ -91,12 +96,31 @@ fn void LRUCache.free(&self, uint capacity = DEFAULT_INITIAL_CAPACITY)
 	*self = {};
 }
 
+<*
+ Prints the LRUCache line-by-line. The first lines have the highest recency.
+*>
+fn usz? LRUCache.to_format(&self, Formatter *f) @dynamic
+{
+	usz n;
+	Node *ptr = self.head.next;
+	n += f.printf("Key        Value\n")!;
+	n += f.printf("---------- ----------")!;
+	while (ptr != self.tail)
+	{
+		n += f.printf("%10.10s %s\n", ptr.key, ptr.value)!;
+		ptr = ptr.next;
+	}
+	return n;
+}
+
+
 fn Value? LRUCache.get(&self, Key key) @operator([])
 {
 	if (try node = self.map.get(key))
 	{
+		// Promote node to the front.
 		self.remove_node(node);
-		self.add_node(node);
+		self.insert_node(node);
 		return node.value;
 	}
 	return NOT_FOUND?;
@@ -109,12 +133,9 @@ fn bool LRUCache.set(&self, Key key, Value value) @operator([]=)
 	// If the map isn't initialized, use the defaults to initialize it.
 	switch (self.allocator.ptr)
 	{
-		case &dummy:
-			self.init(mem);
-		case null:
-			self.tinit();
-		default:
-			break;
+		case &dummy: self.init(mem);
+		case null: self.tinit();
+		default: break;
 	}
 
 	if (try node = self.map.get(key))
@@ -134,7 +155,7 @@ fn bool LRUCache.set(&self, Key key, Value value) @operator([]=)
 
 	Node* new_node = allocator::new(self.allocator, Node);
 	new_node.init(key, value);
-	self.add_node(new_node);
+	self.insert_node(new_node);
 	self.map.set(key, new_node);
 	return true;
 }
@@ -142,7 +163,7 @@ fn bool LRUCache.set(&self, Key key, Value value) @operator([]=)
 <*
  Add node at the front of the linked list.
 *>
-fn void LRUCache.add_node(&self, Node *node) @private
+fn void LRUCache.insert_node(&self, Node *node) @private
 {
 	Node* next_node = self.head.next;
 	self.head.next = node;
@@ -236,17 +257,21 @@ fn void LFUCache.free(&self, uint capacity = DEFAULT_INITIAL_CAPACITY)
 	*self = {};
 }
 
-import std::io;
+
+<*
+ Prints the LFUCache.
+*>
 fn usz? LFUCache.to_format(&self, Formatter *f) @dynamic
 {
 	usz n;
+	n += f.printf("Frequency  Key        Value")!;
+	n += f.printf("---------- ---------- ----------")!;
 	self.freq.@each(; ulong freq, Pair{Node*,Node*} v)
 	{
-		n += f.printf("Freq[%d]: ", freq)!;
 		Node* ptr = v.first.next;
 		while (ptr != v.second)
 		{
-			n += f.printf("%s=%s ", ptr.key, ptr.value)!;
+			n += f.printf("%10d %10.10s %s ", freq, ptr.key, ptr.value)!;
 			ptr = ptr.next;
 		}
 		n += f.print("\n")!;
@@ -256,8 +281,7 @@ fn usz? LFUCache.to_format(&self, Formatter *f) @dynamic
 
 fn Value? LFUCache.get(&self, Key key) @operator([])
 {
-	if (try node = self.map.get(key))
-	{
+	if (try node = self.map.get(key)) {
 		Value value = node.value;
 		self.update_frequencies(node);
 		return value;
@@ -272,18 +296,17 @@ fn bool LFUCache.set(&self, Key key, Value value) @operator([]=)
 	// If the map isn't initialized, use the defaults to initialize it.
 	switch (self.allocator.ptr)
 	{
-		case &dummy:
-			self.init(mem);
-		case null:
-			self.tinit();
-		default:
-			break;
+		case &dummy: self.init(mem);
+		case null: self.tinit();
+		default: break;
 	}
 
 	if (try node = self.map.get(key))
 	{
 		if (self.on_evict_fn)
 		{
+			// If an eviction function is defined, we call it to
+			// release value before it is overwritten.
 			self.on_evict_fn(node.key, node.value, self.evict_data);
 		}
 		node.value = value;
@@ -294,18 +317,20 @@ fn bool LFUCache.set(&self, Key key, Value value) @operator([]=)
 		// Remove least frequently used data if cache is full
 		if (self.map.len() >= self.capacity)
 		{
-			Node *lfu = self.freq[self.min_freq]!!.second.prev;
-			self.map.remove(lfu.key);
-			self.remove_node(lfu);
-
-			if (try flist = self.freq[self.min_freq] && flist.first.next == flist.second)
+			if (try freq_list = self.freq[self.min_freq])
 			{
-				allocator::free(self.allocator, flist.first);
-				allocator::free(self.allocator, flist.second);
-				self.freq.remove(self.min_freq);
-			}
+				Node *lfu = freq_list.second.prev;
+				self.map.remove(lfu.key);
+				self.remove_node(lfu);
+				self.evict_node(lfu);
 
-			self.evict_node(lfu);
+				if (freq_list.first.next == freq_list.second)
+				{
+					allocator::free(self.allocator, freq_list.first);
+					allocator::free(self.allocator, freq_list.second);
+					self.freq.remove(self.min_freq);
+				}
+			}
 		}
 	}
 
@@ -313,14 +338,14 @@ fn bool LFUCache.set(&self, Key key, Value value) @operator([]=)
 	new_node.init(key, value);
 	self.map.set(key, new_node);
 	self.min_freq = 1;
-	self.add_node(new_node, 1);
+	self.insert_node(new_node, 1);
 	return true;
 }
 
 <*
  Add node at the front of the linked list for the given frequency.
 *>
-fn void LFUCache.add_node(&self, Node *node, usz freq) @private
+fn void LFUCache.insert_node(&self, Node *node, usz freq) @private
 {
 	if (catch self.freq[freq])
 	{
@@ -331,6 +356,7 @@ fn void LFUCache.add_node(&self, Node *node, usz freq) @private
 		self.freq[freq] = { head, tail };
 	}
 
+	// This next line can never panic becaus it will be set above.
 	Node *head = self.freq[freq]!!.first;
 	Node *tmp  = head.next;
 	node.next = tmp;
@@ -352,7 +378,7 @@ fn void LFUCache.remove_node(&self, Node *node) @private
 }
 
 <*
- Update frequencies for a given node
+ Update frequencies for a given node and it to the linked list.
 *>
 fn void LFUCache.update_frequencies(&self, Node* node) @private
 {
@@ -369,7 +395,7 @@ fn void LFUCache.update_frequencies(&self, Node* node) @private
 		if (self.min_freq == old_freq) self.min_freq++;
 	}
 
-	self.add_node(node, node.freq);
+	self.insert_node(node, node.freq);
 }
 
 <*
