@@ -2,7 +2,7 @@
 
 A zero-dependency **Least Recently Used (LRU) and Least Frequently Used (LFU)
 cache** for [C3](https://c3-lang.org/). It provides O(1) `get`/`set` by
-combining a hash map with a doubly-linked list.
+combining a hash map with a doubly-linked list (for LRU) or frequency list (for LFU).
 
 > Works well for memoization, caching decoded assets, small DB query results, etc.
 
@@ -19,6 +19,8 @@ combining a hash map with a doubly-linked list.
 
 ## How it works
 
+### LRU Cache
+
 * A **hash map** gives constant-time lookup.
 * A **doubly-linked list** maintains recency: most-recently-used at the head, least at the tail.
 * On `get`, we move the node to the head.
@@ -26,6 +28,15 @@ combining a hash map with a doubly-linked list.
   * If key exists: update value and move to head.
   * If capacity reached: evict the tail and free that node.
 
+### LFU Cache
+
+* A **hash map** gives constant-time lookup.
+* Frequency counts for each key are tracked.
+* Nodes are grouped by frequency in linked frequency lists.
+* On `get`, the frequency of the node is incremented, and it moves tot he correct frequency list.
+  On `set`:
+  * If key exists: update value and increment frequency.
+  * If capacity reached: evict the least frequently used node with with the lowest frequency count..
 ---
 
 ## Install
@@ -108,6 +119,40 @@ fn void test_lru_cache_custom_free() @test
 	assert(@ok(lru.get("D")));
 
 	lru.free();
+}
+```
+
+### 3) Basic LFU cache
+
+```c3
+import std::collections::cache;
+import std::io;
+
+fn void main() => example_lfu();
+
+fn void example_lfu() => @assert_leak()
+{
+	// Create a cache with capacity 3
+	LFUCache{String, int} lfu;
+	lfu.init(mem, 3);
+	defer lfu.free();
+
+	lfu["one"] = 1;
+	lfu["two"] = 2;
+	lfu["three"] = 3;
+
+	// Access keys to increase frequency
+	if (try lfu["two"]) {}
+	if (try lfu["two"]) {}
+	if (try lfu["three"]) {}
+
+	// Insert a 4th item, this evicts the least frequently used key ("one")
+	lfu["four"] = 4;
+
+	if (@catch(lfu["one"]))
+	{
+		io::printn("1 was evicted due to low frequency");
+	}
 }
 ```
 
