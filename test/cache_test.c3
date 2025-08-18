@@ -34,3 +34,18 @@ fn void test_lru_cache_custom_free() @test
 	assert(@ok(lru.get("D")));
 	lru.free();
 }
+
+fn void test_lfu_cache() @test
+{
+	LFUCache{String, int} lfu;
+	lfu.init(mem, 2);
+	defer lfu.free();
+	lfu["A"] = 1;
+	lfu["B"] = 2;
+	assert(@ok(lfu["A"]));
+	lfu["C"] = 3;
+	assert(@catch(lfu["B"]));
+	lfu["D"] = 4;
+	assert(@catch(lfu["C"]));
+	assert(@ok(lfu["D"]));
+}

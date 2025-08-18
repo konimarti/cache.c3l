@@ -1,8 +1,8 @@
-# LRU Cache in C3
+# LRU/LFU Cache in C3
 
-A tiny, zero-dependency **Least Recently Used (LRU) cache** for
-[C3](https://c3-lang.org/). It provides O(1) `get`/`set` by combining a hash
-map with a doubly-linked list, plus a clean, generic API.
+A zero-dependency **Least Recently Used (LRU) and Least Frequently Used (LFU)
+cache** for [C3](https://c3-lang.org/). It provides O(1) `get`/`set` by
+combining a hash map with a doubly-linked list.
 
 > Works well for memoization, caching decoded assets, small DB query results, etc.
 
@@ -49,7 +49,7 @@ import std::collections::cache;
 
 ## Usage examples
 
-### 1) Basic cache of `String → int`
+### 1) Basic LRU cache of `String → int`
 
 ```c3
 import std::collections::cache;
@@ -83,7 +83,7 @@ fn void example_basic() => @assert_leak()
 }
 ```
 
-### 2) Eviction callback (freeing heap resources)
+### 2) Eviction callback example (freeing heap resources)
 
 ```c3
 fn void on_evict_free_string(String k, String v, void* data) => v.free(mem);
@@ -115,7 +115,8 @@ fn void test_lru_cache_custom_free() @test
 
 ## Limitations & notes
 
-* Values are stored **by value**. If you put pointers, **you** own the lifetime (use `on_evict`).
+* Values are stored **by value**. If you put pointers, **you** own the lifetime (use `on_evict_fn`).
+* The `on_evict_fn` is also called when a value is overwritten by resetting an existing key (for the LFU cache).
 * Not persistent; state is in-memory only.
 * This implementation is **not** thread-safe. Wrap it with your own mutex/RWLock if you need concurrent access.
 
